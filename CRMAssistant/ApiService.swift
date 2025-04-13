@@ -1,70 +1,126 @@
-// ApiService.swift - Updated version
+// ApiService.swift
 import Foundation
 
-class ApiService {
-    // We'll replace this with your actual Make.com webhook URL
-    private let apiUrl = "https://hook.us2.make.com/ko3yo8nvxba3ppdtzcyg7bact6oxquhf"
+enum HTTPMethod: String {
+    case get = "GET"
+    case post = "POST"
+    case put = "PUT"
+    case delete = "DELETE"
+}
+
+enum APIError: Error {
+    case invalidURL
+    case requestFailed(Error)
+    case invalidResponse
+    case decodingFailed(Error)
+    case serverError(Int)
+    case noData
     
-    func sendMessage(_ message: String, completion: @escaping (String?, Error?) -> Void) {
-        // Create request body
-        let body: [String: Any] = ["message": message]
-        
-        // Convert body to JSON data
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
-            completion(nil, NSError(domain: "ApiService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create JSON data"]))
-            return
+    var localizedDescription: String {
+        switch self {
+        case .invalidURL:
+            return "Invalid URL"
+        case .requestFailed(let error):
+            return "Request failed: \(error.localizedDescription)"
+        case .invalidResponse:
+            return "Invalid response from server"
+        case .decodingFailed(let error):
+            return "Failed to decode data: \(error.localizedDescription)"
+        case .serverError(let code):
+            return "Server error with code: \(code)"
+        case .noData:
+            return "No data received"
         }
+    }
+}
+
+class ApiService {
+    static let shared = ApiService()
+    
+    private let session = URLSession.shared
+    
+    func request<T: Decodable>(
+        url: URL,
+        method: HTTPMethod = .get,
+        headers: [String: String]? = nil,
+        body: Data? = nil,
+        responseType: T.Type
+    ) async throws -> T {
         
-        // Create URL
-        guard let url = URL(string: apiUrl) else {
-            completion(nil, NSError(domain: "ApiService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"]))
-            return
-        }
-        
-        // Create request
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = jsonData
+        request.httpMethod = method.rawValue
+        request.httpBody = body
+        
+        // Set default headers
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        // Create task
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            // Handle error
-            if let error = error {
-                DispatchQueue.main.async {
-                    completion(nil, error)
-                }
-                return
-            }
-            
-            // Check response
-            guard let data = data else {
-                DispatchQueue.main.async {
-                    completion(nil, NSError(domain: "ApiService", code: 3, userInfo: [NSLocalizedDescriptionKey: "No data received"]))
-                }
-                return
-            }
-            
-            // Parse response
-            do {
-                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let response = json["response"] as? String {
-                    DispatchQueue.main.async {
-                        completion(response, nil)
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        completion(nil, NSError(domain: "ApiService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]))
-                    }
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    completion(nil, error)
-                }
+        // Add custom headers if provided
+        if let headers = headers {
+            for (key, value) in headers {
+                request.addValue(value, forHTTPHeaderField: key)
             }
         }
         
-        // Start task
-        task.resume()
+        // Perform request
+        let (data, response) = try await session.data(for: request)
+        
+        // Check response
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        // Check status code
+        if !(200...299).contains(httpResponse.statusCode) {
+            throw APIError.serverError(httpResponse.statusCode)
+        }
+        
+        // Decode response
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw APIError.decodingFailed(error)
+        }
+    }
+    
+    func requestString(
+        url: URL,
+        method: HTTPMethod = .get,
+        headers: [String: String]? = nil,
+        body: Data? = nil
+    ) async throws -> String {
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = method.rawValue
+        request.httpBody = body
+        
+        // Set default headers
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Add custom headers if provided
+        if let headers = headers {
+            for (key, value) in headers {
+                request.addValue(value, forHTTPHeaderField: key)
+            }
+        }
+        
+        // Perform request
+        let (data, response) = try await session.data(for: request)
+        
+        // Check response
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        // Check status code
+        if !(200...299).contains(httpResponse.statusCode) {
+            throw APIError.serverError(httpResponse.statusCode)
+        }
+        
+        // Convert data to string
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw APIError.noData
+        }
+        
+        return string
     }
 }
